@@ -1,4 +1,4 @@
-use bitcoin::Transaction;
+use bitcoin::{Amount, Transaction, Txid};
 use serde_json::{Value, json};
 
 /// Alchemy Client - 与 Bitcoin RPC 通信
@@ -29,9 +29,11 @@ pub struct ScriptPubKey {
 pub struct TxOut {
     pub bestblock: String,
     pub confirmations: i64,
-    pub value: f64,
+    pub value: u64,
     pub script_pubkey: ScriptPubKey,
     pub coinbase: Option<bool>,
+    pub txid: String,
+    pub vout: u32,
 }
 
 impl AlchemyClient {
@@ -106,7 +108,7 @@ impl AlchemyClient {
         let tx_out = TxOut {
             bestblock: res["bestblock"].as_str().unwrap_or("").to_string(),
             confirmations: res["confirmations"].as_i64().unwrap_or(0),
-            value: res["value"].as_f64().unwrap_or(0.0),
+            value: Amount::from_btc(res["value"].as_f64().unwrap_or(0.0))?.to_sat(), // satoshis
             script_pubkey: ScriptPubKey {
                 asm: res["scriptPubKey"]["asm"]
                     .as_str()
@@ -121,6 +123,8 @@ impl AlchemyClient {
                     .map(|s| s.to_string()),
             },
             coinbase: res["coinbase"].as_bool(),
+            txid: txid.to_string(),
+            vout: vout,
         };
 
         Ok(Some(tx_out))
@@ -217,36 +221,6 @@ impl AlchemyClient {
         match self.get_tx_out(txid, vout, true).await? {
             Some(_) => Ok(true),
             None => Ok(false),
-        }
-    }
-
-    /// =====================================================
-    /// 辅助方法：获取 UTXO 的金额
-    /// =====================================================
-    ///
-    /// 返回 UTXO 的金额（以 BTC 为单位）
-    pub async fn get_utxo_value(
-        &self,
-        txid: &str,
-        vout: u32,
-    ) -> Result<Option<f64>, Box<dyn std::error::Error>> {
-        match self.get_tx_out(txid, vout, true).await? {
-            Some(tx_out) => Ok(Some(tx_out.value)),
-            None => Ok(None),
-        }
-    }
-
-    /// =====================================================
-    /// 辅助方法：获取 UTXO 的确认数
-    /// =====================================================
-    pub async fn get_utxo_confirmations(
-        &self,
-        txid: &str,
-        vout: u32,
-    ) -> Result<Option<i64>, Box<dyn std::error::Error>> {
-        match self.get_tx_out(txid, vout, true).await? {
-            Some(tx_out) => Ok(Some(tx_out.confirmations)),
-            None => Ok(None),
         }
     }
 }
