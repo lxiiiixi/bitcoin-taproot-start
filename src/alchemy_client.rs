@@ -82,6 +82,8 @@ impl AlchemyClient {
 
         let result: Value = response.json().await?;
 
+        println!("  [RPC] 响应: {:?}", result);
+
         // 检查错误
         if let Some(error) = result.get("error") {
             if !error.is_null() {
@@ -99,6 +101,7 @@ impl AlchemyClient {
 
         // 如果结果是 null，表示 UTXO 已被花费或不存在
         if result["result"].is_null() {
+            println!("  [RPC] 结果为 null，UTXO 已被花费或不存在");
             return Ok(None);
         }
 

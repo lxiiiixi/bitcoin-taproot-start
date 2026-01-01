@@ -1,4 +1,7 @@
-use bitcoin::key::{Secp256k1, TweakedKeypair};
+use std::io::Chain;
+
+use bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
+use bitcoin::script::Builder;
 use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::taproot::{self, LeafVersion, TapLeaf, TaprootBuilder, TaprootSpendInfo};
 use bitcoin::transaction::Version;
@@ -15,7 +18,7 @@ use crate::utils::build_inscription_script;
 /// - 花费一个 UTXO
 /// - 创建一个 0.0001 BTC 的新 Taproot UTXO（给自己）
 /// - 剩余作为找零
-pub fn create_commit_tx(
+pub fn create_first_tx(
     secp: &Secp256k1<bitcoin::secp256k1::All>,
     utxo: AlchemyTxOut,
     destination: &Address,
@@ -88,14 +91,20 @@ pub fn create_commit_tx(
     Ok(tx)
 }
 
-pub fn create_inscription_commit_tx(
+pub fn create_commit_tx(
     secp: &Secp256k1<bitcoin::secp256k1::All>,
+
+    // 用来“出钱”的普通 UTXO（funding utxo）
     funding_utxo: AlchemyTxOut,
+
+    // Taproot internal key（未 tweak 的 keypair）
+    internal_keypair: &Keypair,
+
     tweaked_keypair: &TweakedKeypair,
-    inscription_script: ScriptBuf,
-) -> Result<Transaction, Box<dyn std::error::Error>> {
-    let commit_value: u64 = 10_000; // 0.0001 BTC
-    let fee: u64 = 200;
+) -> Result<(Transaction, TaprootSpendInfo), Box<dyn std::error::Error>> {
+    // ---------------- 参数 ----------------
+    let commit_value: u64 = 10_000;
+    let fee: u64 = 200; // 给足 fee，避免 mempool 拒绝
 
     if funding_utxo.value < commit_value + fee {
         return Err("funding utxo not enough".into());
@@ -103,20 +112,30 @@ pub fn create_inscription_commit_tx(
 
     let change_value = funding_utxo.value - commit_value - fee;
 
-    let (internal_xonly, _) = tweaked_keypair.to_keypair().x_only_public_key();
+    // ---------------- 1️⃣ 构造 Taproot script tree（核心） ----------------
+    // ⚠️ 这一步决定了“未来能不能 script-path reveal”
+    let (internal_xonly, _) = internal_keypair.x_only_public_key();
+    println!("  📍 Internal XOnly: {}", internal_xonly.to_string());
 
-    // ---------- 1️⃣ 构建 Taproot script tree----------
+    let inscription_script = build_inscription_script();
+
     let taproot_spend_info: TaprootSpendInfo = TaprootBuilder::new()
         .add_leaf(0, inscription_script.clone())?
         .finalize(secp, internal_xonly)
         .unwrap();
 
-    let merkle_root = taproot_spend_info.merkle_root();
+    // ---------------- 2️⃣ 构造 commit 地址（承诺脚本树） ----------------
+    // 地址 ≈ script_pubkey 的人类编码
+    let commit_address = Address::p2tr(
+        secp,
+        internal_xonly,
+        taproot_spend_info.merkle_root(), // ⭐ 关键：Some(root)
+        Network::Testnet,
+    );
 
-    // ---------- 2️⃣ 用 taproot output key 生成 commit 地址 ----------
-    let commit_address = Address::p2tr(secp, internal_xonly, merkle_root, Network::Testnet);
+    println!("  📍 Commit Address: {}", commit_address.to_string());
 
-    // ---------- 3️⃣ 构造交易 input ----------
+    // ---------------- 3️⃣ 构造交易 input（花费 funding utxo） ----------------
     let txin = TxIn {
         previous_output: OutPoint {
             txid: funding_utxo.txid.parse()?,
@@ -127,15 +146,26 @@ pub fn create_inscription_commit_tx(
         witness: Witness::default(),
     };
 
-    // ---------- 4️⃣ 构造交易 outputs ----------
+    // ---------------- 4️⃣ 构造交易 outputs ----------------
+    // ① commit output：承诺 script tree 的 P2TR UTXO
     let commit_output = TxOut {
         value: Amount::from_sat(commit_value),
         script_pubkey: commit_address.script_pubkey(),
     };
 
+    // ② 找零（通常回到普通钱包地址，这里示例用同一个 internal key）
+    let change_address = Address::p2tr(
+        secp,
+        internal_xonly,
+        None, // 普通 key-path 地址即可
+        Network::Testnet,
+    );
+
+    println!("  📍 Change Address: {}", change_address.to_string());
+
     let change_output = TxOut {
         value: Amount::from_sat(change_value),
-        script_pubkey: commit_address.script_pubkey(),
+        script_pubkey: change_address.script_pubkey(),
     };
 
     let mut tx = Transaction {
@@ -144,8 +174,10 @@ pub fn create_inscription_commit_tx(
         input: vec![txin],
         output: vec![commit_output, change_output],
     };
+    // 虽然这里用的是跟创建钱包时同样的 internal key 以及同样的规则，但是还是会生成一个新的地址
+    // 是可以被同一个私钥控制的，但是地址是不同的，有利于隐私保护
 
-    // ---------- 5️⃣ key-path sighash（注意：不是 script-path） ----------
+    // ---------------- 5️⃣ key-path sighash（不是 script-path） ----------------
     let mut sighash_cache = SighashCache::new(&mut tx);
 
     let sighash = sighash_cache.taproot_key_spend_signature_hash(
@@ -157,16 +189,17 @@ pub fn create_inscription_commit_tx(
         TapSighashType::Default,
     )?;
 
-    // ---------- 6️⃣ Schnorr 签名（internal key） ----------
+    // ---------------- 6️⃣ Schnorr 签名（internal key） ----------------
     let sig = secp.sign_schnorr(
-        &bitcoin::secp256k1::Message::from_digest_slice(sighash.as_ref())?,
+        &bitcoin::secp256k1::Message::from_slice(sighash.as_ref())?,
         &tweaked_keypair.to_keypair(),
     );
 
     tx.input[0].witness.push(sig.as_ref().to_vec());
 
-    // ---------- 返回 ----------
-    Ok(tx)
+    // ---------------- 返回 ----------------
+    // 要把 taproot_spend_info 返回，reveal tx 需要它拿 control_block
+    Ok((tx, taproot_spend_info))
 }
 
 pub fn create_brc20_transaction(
@@ -175,7 +208,7 @@ pub fn create_brc20_transaction(
     tweaked_keypair: &TweakedKeypair,
 ) -> Result<Transaction, Box<dyn std::error::Error>> {
     // ---------- 构造 commit value ----------
-    let commit_value: u64 = 1_000; // 1_000 sats = 0.00001 BTC
+    let commit_value: u64 = 9_800; // 9_800 sats = 0.000098 BTC
     let fee: u64 = 200; // 100 sats = 0.000001 BTC
 
     if utxo.value < commit_value + fee {
@@ -190,15 +223,7 @@ pub fn create_brc20_transaction(
     println!("  💰 Change Value: {} sat", change_value);
 
     // ---------- 构造 brc20 data 和 inscription script----------
-    let brc20_data = json!({
-        "p": "brc-20",
-        "op": "deploy",
-        "tick": "ordi",
-        "max": "21000000",
-        "lim": "1000"
-    })
-    .to_string();
-    let inscription_script = build_inscription_script(&brc20_data);
+    let inscription_script = build_inscription_script();
 
     let input = TxIn {
         previous_output: OutPoint {
@@ -209,6 +234,13 @@ pub fn create_brc20_transaction(
         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
         witness: Witness::default(),
     };
+
+    let address = Address::p2tr(
+        secp,
+        tweaked_keypair.to_keypair().x_only_public_key().0,
+        None,
+        Network::Testnet,
+    );
 
     let output = TxOut {
         value: Amount::from_sat(commit_value),

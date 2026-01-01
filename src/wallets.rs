@@ -1,11 +1,17 @@
 use bip39::{Language, Mnemonic};
 use bitcoin::{
-    Address, Network, PrivateKey,
+    Address, Network, PrivateKey, XOnlyPublicKey,
     bip32::{DerivationPath, Xpriv},
     key::{Keypair, Secp256k1, TapTweak, TweakedKeypair},
 };
 
 use crate::env_config::ENV_CONFIGS;
+
+pub struct TaprootWallet {
+    pub address: Address,
+    pub internal_xonly: XOnlyPublicKey,
+    pub tweaked_keypair: TweakedKeypair,
+}
 
 // https://rust-bitcoin.org/book/tx_taproot.html
 
@@ -13,7 +19,7 @@ use crate::env_config::ENV_CONFIGS;
 /// 创建 Taproot 钱包（BIP86, testnet: m/86'/1'/0'/0/0）
 pub fn create_taproot_wallet(
     secp: &Secp256k1<bitcoin::secp256k1::All>,
-) -> Result<(PrivateKey, Address, TweakedKeypair), Box<dyn std::error::Error>> {
+) -> Result<TaprootWallet, Box<dyn std::error::Error>> {
     // 1️⃣ 解析 mnemonic（bip39 v2 正确方式）
     let mnemonic = Mnemonic::parse_in_normalized(Language::English, &ENV_CONFIGS.mnemonic)?;
 
@@ -39,12 +45,27 @@ pub fn create_taproot_wallet(
 
     // 8️⃣ Taproot 地址（使用 internal key）
     let (internal_xonly, _) = keypair.x_only_public_key();
+    println!("  📍 Internal XOnly: {}", internal_xonly.to_string());
     let address = Address::p2tr(secp, internal_xonly, None, Network::Testnet);
+    // let address: Address = Address::p2tr(
+    //     secp,
+    //     tweaked_keypair.to_keypair().x_only_public_key().0,
+    //     None,
+    //     Network::Testnet,
+    // );
+
+    println!("  📍 Address: {}", address.to_string());
+    // println!("  📍 Address2: {}", address2.to_string());
+    // println!("  📍 Address3: {}", address3.to_string());
 
     // 9️⃣ 返回一个带 network 的 PrivateKey（方便后续）
-    let private_key = PrivateKey::new(secret_key, Network::Testnet);
+    // let private_key = PrivateKey::new(secret_key, Network::Testnet);
 
-    Ok((private_key, address, tweaked_keypair))
+    Ok(TaprootWallet {
+        address,
+        internal_xonly,
+        tweaked_keypair,
+    })
 }
 
 // pub fn create_taproot_wallet() -> Result<Vec<String>, Box<dyn std::error::Error>> {

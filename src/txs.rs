@@ -1,9 +1,8 @@
 use crate::alchemy_client::AlchemyClient;
-use crate::transactions::{
-    create_brc20_transaction, create_commit_tx, create_inscription_commit_tx,
-};
-use bitcoin::Address;
-use bitcoin::key::{Secp256k1, TweakedKeypair};
+use crate::transactions::{create_brc20_transaction, create_commit_tx, create_first_tx};
+use bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
+use bitcoin::script::Builder;
+use bitcoin::{Address, Network};
 use serde_json::json;
 
 // 第一笔交易(只是做一个简单的转账) - a7bb32cdb8d77f480804e0743db3b181938a9f4745392b4f825afa5032895c2f
@@ -22,56 +21,43 @@ pub async fn tx_first_commit(
         .await
         .unwrap()
     {
-        println!("UTXO value: {} BTC", tx_out.value);
+        println!("UTXO value: {} sats", tx_out.value);
         println!("Confirmations: {}", tx_out.confirmations);
 
-        let tx = create_commit_tx(&secp, tx_out, &address, &tweaked_keypair).unwrap();
+        let tx = create_first_tx(&secp, tx_out, &address, &tweaked_keypair).unwrap();
         let txid = alchemy.broadcast_tx(&tx).await.unwrap();
         println!("  📍 TXID: {}", txid);
     }
 }
 
-// pub async fn tx_inscription_commit(
-//     alchemy: &AlchemyClient,
-//     secp: &Secp256k1<bitcoin::secp256k1::All>,
-//     address: &Address,
-//     tweaked_keypair: &TweakedKeypair,
-// ) {
-//     if let Some(tx_out) = alchemy
-//         .get_tx_out(
-//             "a7bb32cdb8d77f480804e0743db3b181938a9f4745392b4f825afa5032895c2f",
-//             1,
-//             true,
-//         )
-//         .await
-//         .unwrap()
-//     {
-//         println!("UTXO value: {} BTC", tx_out.value);
-//         println!("Confirmations: {}", tx_out.confirmations);
+// 第二笔交易(output使用支持 Taproot Script Tree 的地址) f3d108c6d250b8b4f54178de18f1e4c631be280a154d0c5d082a64e1d8c4c2a5
+pub async fn tx_inscription_commit(
+    alchemy: &AlchemyClient,
+    secp: &Secp256k1<bitcoin::secp256k1::All>,
+    keypair: &Keypair,
+    tweaked_keypair: &TweakedKeypair,
+    txid: &str,
+    vout_index: u32,
+) {
+    if let Some(tx_out) = alchemy.get_tx_out(txid, vout_index, true).await.unwrap() {
+        println!("UTXO value: {} sats", tx_out.value);
+        println!("Confirmations: {}", tx_out.confirmations);
 
-//         let tx = create_inscription_commit_tx(&secp, tx_out, &tweaked_keypair, inscription_script)
-//             .unwrap();
-//         let txid = alchemy.broadcast_tx(&tx).await.unwrap();
-//         println!("  📍 TXID: {}", txid);
-//     }
-// }
+        let (tx, _) = create_commit_tx(&secp, tx_out, &keypair, &tweaked_keypair).unwrap();
+        let txid = alchemy.broadcast_tx(&tx).await.unwrap();
+        println!("  📍 TXID: {}", txid);
+    }
+}
 
 pub async fn tx_brc20_deploy(
     alchemy: &AlchemyClient,
     secp: &Secp256k1<bitcoin::secp256k1::All>,
-    address: &Address,
     tweaked_keypair: &TweakedKeypair,
+    txid: &str,
+    vout_index: u32,
 ) {
-    if let Some(tx_out) = alchemy
-        .get_tx_out(
-            "a7bb32cdb8d77f480804e0743db3b181938a9f4745392b4f825afa5032895c2f",
-            0,
-            true,
-        )
-        .await
-        .unwrap()
-    {
-        println!("UTXO value: {} BTC", tx_out.value);
+    if let Some(tx_out) = alchemy.get_tx_out(txid, vout_index, true).await.unwrap() {
+        println!("UTXO value: {} sats", tx_out.value);
         println!("Confirmations: {}", tx_out.confirmations);
 
         let tx = create_brc20_transaction(&secp, tx_out, &tweaked_keypair).unwrap();
