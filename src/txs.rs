@@ -1,5 +1,6 @@
 use crate::alchemy_client::AlchemyClient;
 use crate::transactions::{create_brc20_transaction, create_commit_tx, create_first_tx};
+use crate::wallets::TaprootWallet;
 use bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
 use bitcoin::script::Builder;
 use bitcoin::{Address, Network};
@@ -34,8 +35,7 @@ pub async fn tx_first_commit(
 pub async fn tx_inscription_commit(
     alchemy: &AlchemyClient,
     secp: &Secp256k1<bitcoin::secp256k1::All>,
-    keypair: &Keypair,
-    tweaked_keypair: &TweakedKeypair,
+    taproot_wallet: &TaprootWallet,
     txid: &str,
     vout_index: u32,
 ) {
@@ -43,7 +43,11 @@ pub async fn tx_inscription_commit(
         println!("UTXO value: {} sats", tx_out.value);
         println!("Confirmations: {}", tx_out.confirmations);
 
-        let (tx, _) = create_commit_tx(&secp, tx_out, &keypair, &tweaked_keypair).unwrap();
+        let (tx, taproot_spend_info) = create_commit_tx(&secp, tx_out, &taproot_wallet).unwrap();
+        println!(
+            "  📍 Taproot Spend Info: {:?}",
+            taproot_spend_info.merkle_root()
+        );
         let txid = alchemy.broadcast_tx(&tx).await.unwrap();
         println!("  📍 TXID: {}", txid);
     }
@@ -52,7 +56,7 @@ pub async fn tx_inscription_commit(
 pub async fn tx_brc20_deploy(
     alchemy: &AlchemyClient,
     secp: &Secp256k1<bitcoin::secp256k1::All>,
-    tweaked_keypair: &TweakedKeypair,
+    taproot_wallet: &TaprootWallet,
     txid: &str,
     vout_index: u32,
 ) {
@@ -60,7 +64,7 @@ pub async fn tx_brc20_deploy(
         println!("UTXO value: {} sats", tx_out.value);
         println!("Confirmations: {}", tx_out.confirmations);
 
-        let tx = create_brc20_transaction(&secp, tx_out, &tweaked_keypair).unwrap();
+        let tx = create_brc20_transaction(&secp, tx_out, &taproot_wallet).unwrap();
         let txid = alchemy.broadcast_tx(&tx).await.unwrap();
         println!("  📍 TXID: {}", txid);
     }

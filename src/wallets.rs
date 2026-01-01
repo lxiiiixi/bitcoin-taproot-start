@@ -3,14 +3,26 @@ use bitcoin::{
     Address, Network, PrivateKey, XOnlyPublicKey,
     bip32::{DerivationPath, Xpriv},
     key::{Keypair, Secp256k1, TapTweak, TweakedKeypair},
+    taproot::TaprootSpendInfo,
 };
 
 use crate::env_config::ENV_CONFIGS;
 
 pub struct TaprootWallet {
-    pub address: Address,
-    pub internal_xonly: XOnlyPublicKey,
-    pub tweaked_keypair: TweakedKeypair,
+    /// Taproot internal key（root identity）
+    internal_keypair: Keypair,
+
+    /// Taproot output key（用于签名）
+    tweaked_keypair: TweakedKeypair,
+
+    /// Internal x-only pubkey（构造地址 / script tree）
+    internal_xonly: XOnlyPublicKey,
+
+    /// 默认 key-path 地址（无 script tree）
+    /// 用于接受转账等
+    internal_address: Address,
+    // Tweaked key-path 地址（有 script tree）
+    // tweaked_address: Address,
 }
 
 // https://rust-bitcoin.org/book/tx_taproot.html
@@ -31,22 +43,21 @@ pub fn create_taproot_wallet(
     let master_xprv = Xpriv::new_master(Network::Testnet, &seed)?;
 
     // 4️⃣ BIP86 路径
-    let path: DerivationPath = "m/86'/1'/0'/0/0".parse()?;
+    let path: DerivationPath = "m/86'/1'/0'/0/1".parse()?;
     let child_xprv = master_xprv.derive_priv(secp, &path)?;
 
     // 5️⃣ bitcoin 中 private_key 就是 secp256k1::SecretKey
     let secret_key = child_xprv.private_key;
 
-    // 6️⃣ SecretKey -> Keypair
-    let keypair = Keypair::from_secret_key(secp, &secret_key);
-
-    // 7️⃣ Taproot key-path tweak（无 script tree）
-    let tweaked_keypair: TweakedKeypair = keypair.tap_tweak(secp, None);
+    // 6️⃣ SecretKey -> Keypair（internal key）
+    // 主要作用是：派生 Taproot 地址、构造 script tree、生成 tweaked key，作为钱包主身份
+    // 一般不用来：直接签名，
+    let internal_keypair = Keypair::from_secret_key(secp, &secret_key);
 
     // 8️⃣ Taproot 地址（使用 internal key）
-    let (internal_xonly, _) = keypair.x_only_public_key();
+    let (internal_xonly, _) = internal_keypair.x_only_public_key();
     println!("  📍 Internal XOnly: {}", internal_xonly.to_string());
-    let address = Address::p2tr(secp, internal_xonly, None, Network::Testnet);
+    let internal_address = Address::p2tr(secp, internal_xonly, None, Network::Testnet);
     // let address: Address = Address::p2tr(
     //     secp,
     //     tweaked_keypair.to_keypair().x_only_public_key().0,
@@ -54,18 +65,75 @@ pub fn create_taproot_wallet(
     //     Network::Testnet,
     // );
 
-    println!("  📍 Address: {}", address.to_string());
-    // println!("  📍 Address2: {}", address2.to_string());
-    // println!("  📍 Address3: {}", address3.to_string());
+    // 7️⃣ Taproot key-path tweak（无 script tree）
+    // 这里的 None 表示没有 script tree，只有 internal key
+    let tweaked_keypair: TweakedKeypair = internal_keypair.tap_tweak(secp, None);
 
-    // 9️⃣ 返回一个带 network 的 PrivateKey（方便后续）
-    // let private_key = PrivateKey::new(secret_key, Network::Testnet);
+    let tweaked_address = Address::p2tr(
+        secp,
+        tweaked_keypair.to_keypair().x_only_public_key().0,
+        None,
+        Network::Testnet,
+    );
+
+    println!(
+        "  📍 Internal key address: {}",
+        internal_address.to_string()
+    );
+    println!(
+        "  📍 Tweaked key address(Never should be used): {:?}",
+        tweaked_address
+    );
 
     Ok(TaprootWallet {
-        address,
         internal_xonly,
         tweaked_keypair,
+        internal_keypair,
+        internal_address,
     })
+}
+
+impl TaprootWallet {
+    /// 用于所有 key-path 签名
+    pub fn sign_keypath(
+        &self,
+        secp: &Secp256k1<bitcoin::secp256k1::All>,
+        msg: &bitcoin::secp256k1::Message,
+    ) -> bitcoin::secp256k1::schnorr::Signature {
+        secp.sign_schnorr(msg, &self.tweaked_keypair.to_keypair())
+    }
+
+    /// 用于 tapscript（script-path）里显式放入的 x-only pubkey 的签名。
+    /// 注意：这不是 output key（tweaked key），而是脚本里用到的 internal key。
+    pub fn sign_internal(
+        &self,
+        secp: &Secp256k1<bitcoin::secp256k1::All>,
+        msg: &bitcoin::secp256k1::Message,
+    ) -> bitcoin::secp256k1::schnorr::Signature {
+        secp.sign_schnorr(msg, &self.internal_keypair)
+    }
+
+    pub fn get_commit_address_with_script_tree(
+        &self,
+        secp: &Secp256k1<bitcoin::secp256k1::All>,
+        script_tree: &TaprootSpendInfo,
+    ) -> Address {
+        Address::p2tr(
+            secp,
+            self.internal_xonly(),
+            script_tree.merkle_root(),
+            Network::Testnet,
+        )
+    }
+
+    pub fn get_internal_address(&self) -> Address {
+        self.internal_address.clone()
+    }
+
+    /// 用于构造 script tree
+    pub fn internal_xonly(&self) -> bitcoin::secp256k1::XOnlyPublicKey {
+        self.internal_xonly
+    }
 }
 
 // pub fn create_taproot_wallet() -> Result<Vec<String>, Box<dyn std::error::Error>> {

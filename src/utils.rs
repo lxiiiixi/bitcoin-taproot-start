@@ -1,10 +1,10 @@
-use bitcoin::ScriptBuf;
 use bitcoin::opcodes::OP_FALSE;
-use bitcoin::opcodes::all::{OP_ENDIF, OP_IF};
+use bitcoin::opcodes::all::{OP_CHECKSIG, OP_ENDIF, OP_IF};
 use bitcoin::script::{Builder, PushBytesBuf};
+use bitcoin::{ScriptBuf, XOnlyPublicKey};
 use serde_json::json;
 
-pub fn build_inscription_script() -> ScriptBuf {
+pub fn build_inscription_script(xonly_pubkey: XOnlyPublicKey) -> ScriptBuf {
     let brc20_data = serde_json::to_string_pretty(&json!({
         "p": "brc-20",
         "op": "deploy",
@@ -20,8 +20,15 @@ pub fn build_inscription_script() -> ScriptBuf {
         .extend_from_slice(brc20_data.as_bytes())
         .expect("Failed to push slice");
 
+    let mut pk_pb = PushBytesBuf::new();
+    pk_pb
+        .extend_from_slice(&xonly_pubkey.serialize())
+        .expect("Failed to push pubkey");
+
     // push_slice 要求实现 PushBytes 特征（不能超过 2^32 字节）
     Builder::new()
+        .push_slice(pk_pb)
+        .push_opcode(OP_CHECKSIG)
         .push_opcode(OP_FALSE)
         .push_opcode(OP_IF)
         .push_slice(b"ord")

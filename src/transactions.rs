@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::alchemy_client::TxOut as AlchemyTxOut;
 use crate::utils::build_inscription_script;
+use crate::wallets::TaprootWallet;
 
 /// 构造 commit 交易：
 /// - 花费一个 UTXO
@@ -97,10 +98,7 @@ pub fn create_commit_tx(
     // 用来“出钱”的普通 UTXO（funding utxo）
     funding_utxo: AlchemyTxOut,
 
-    // Taproot internal key（未 tweak 的 keypair）
-    internal_keypair: &Keypair,
-
-    tweaked_keypair: &TweakedKeypair,
+    taproot_wallet: &TaprootWallet,
 ) -> Result<(Transaction, TaprootSpendInfo), Box<dyn std::error::Error>> {
     // ---------------- 参数 ----------------
     let commit_value: u64 = 10_000;
@@ -113,25 +111,17 @@ pub fn create_commit_tx(
     let change_value = funding_utxo.value - commit_value - fee;
 
     // ---------------- 1️⃣ 构造 Taproot script tree（核心） ----------------
-    // ⚠️ 这一步决定了“未来能不能 script-path reveal”
-    let (internal_xonly, _) = internal_keypair.x_only_public_key();
-    println!("  📍 Internal XOnly: {}", internal_xonly.to_string());
-
     let inscription_script = build_inscription_script();
 
     let taproot_spend_info: TaprootSpendInfo = TaprootBuilder::new()
         .add_leaf(0, inscription_script.clone())?
-        .finalize(secp, internal_xonly)
+        .finalize(secp, taproot_wallet.internal_xonly())
         .unwrap();
 
     // ---------------- 2️⃣ 构造 commit 地址（承诺脚本树） ----------------
     // 地址 ≈ script_pubkey 的人类编码
-    let commit_address = Address::p2tr(
-        secp,
-        internal_xonly,
-        taproot_spend_info.merkle_root(), // ⭐ 关键：Some(root)
-        Network::Testnet,
-    );
+    let commit_address =
+        taproot_wallet.get_commit_address_with_script_tree(secp, &taproot_spend_info);
 
     println!("  📍 Commit Address: {}", commit_address.to_string());
 
@@ -154,12 +144,7 @@ pub fn create_commit_tx(
     };
 
     // ② 找零（通常回到普通钱包地址，这里示例用同一个 internal key）
-    let change_address = Address::p2tr(
-        secp,
-        internal_xonly,
-        None, // 普通 key-path 地址即可
-        Network::Testnet,
-    );
+    let change_address = taproot_wallet.get_internal_address();
 
     println!("  📍 Change Address: {}", change_address.to_string());
 
@@ -190,9 +175,9 @@ pub fn create_commit_tx(
     )?;
 
     // ---------------- 6️⃣ Schnorr 签名（internal key） ----------------
-    let sig = secp.sign_schnorr(
+    let sig = taproot_wallet.sign_keypath(
+        secp,
         &bitcoin::secp256k1::Message::from_slice(sighash.as_ref())?,
-        &tweaked_keypair.to_keypair(),
     );
 
     tx.input[0].witness.push(sig.as_ref().to_vec());
@@ -205,7 +190,7 @@ pub fn create_commit_tx(
 pub fn create_brc20_transaction(
     secp: &Secp256k1<bitcoin::secp256k1::All>,
     utxo: AlchemyTxOut,
-    tweaked_keypair: &TweakedKeypair,
+    taproot_wallet: &TaprootWallet,
 ) -> Result<Transaction, Box<dyn std::error::Error>> {
     // ---------- 构造 commit value ----------
     let commit_value: u64 = 9_800; // 9_800 sats = 0.000098 BTC
@@ -222,9 +207,6 @@ pub fn create_brc20_transaction(
     println!("  💰 Fee: {} sat", fee);
     println!("  💰 Change Value: {} sat", change_value);
 
-    // ---------- 构造 brc20 data 和 inscription script----------
-    let inscription_script = build_inscription_script();
-
     let input = TxIn {
         previous_output: OutPoint {
             txid: utxo.txid.parse()?,
@@ -235,16 +217,9 @@ pub fn create_brc20_transaction(
         witness: Witness::default(),
     };
 
-    let address = Address::p2tr(
-        secp,
-        tweaked_keypair.to_keypair().x_only_public_key().0,
-        None,
-        Network::Testnet,
-    );
-
     let output = TxOut {
         value: Amount::from_sat(commit_value),
-        script_pubkey: address.script_pubkey(),
+        script_pubkey: taproot_wallet.get_internal_address().script_pubkey(),
     };
 
     let mut tx = Transaction {
@@ -254,34 +229,36 @@ pub fn create_brc20_transaction(
         output: vec![output],
     };
 
+    // ---------- 构造 brc20 data 和 inscription script----------
+    let inscription_script = build_inscription_script();
+
     println!(
         "inscription script hex: {}",
         inscription_script.to_hex_string()
     );
 
     // 构造 Taproot script tree
-    let internal_pubkey = tweaked_keypair.to_keypair().x_only_public_key().0;
-    println!("  🔑 Internal PubKey: {}", internal_pubkey.to_string());
-
     let taproot_builder = TaprootBuilder::new().add_leaf(0, inscription_script.clone())?;
-    let taproot_info = taproot_builder.finalize(&secp, internal_pubkey).unwrap();
+    let taproot_info = taproot_builder
+        .finalize(&secp, taproot_wallet.internal_xonly())
+        .unwrap();
 
     // 获取输出公钥（聚合后的，用于地址）
-    let output_pubkey = taproot_info.output_key().clone();
-    let output_xonly = output_pubkey.to_x_only_public_key();
+    // let output_pubkey = taproot_info.output_key().clone();
+    // let output_xonly = output_pubkey.to_x_only_public_key();
     // 创建 Taproot 地址
-    let address = bitcoin::Address::p2tr(
-        secp,
-        output_xonly,
-        taproot_info.merkle_root(),
-        bitcoin::Network::Testnet,
-    );
+    // let address = bitcoin::Address::p2tr(
+    //     secp,
+    //     output_xonly,
+    //     taproot_info.merkle_root(),
+    //     bitcoin::Network::Testnet,
+    // );
 
-    println!("  📍 Address: {}", address.to_string());
-    println!(
-        "  📍 Address Script: {}",
-        address.script_pubkey().to_hex_string()
-    );
+    // println!("  📍 Address: {}", address.to_string());
+    // println!(
+    //     "  📍 Address Script: {}",
+    //     address.script_pubkey().to_hex_string()
+    // );
 
     let control_block = taproot_info
         .control_block(&(
@@ -307,9 +284,9 @@ pub fn create_brc20_transaction(
         TapSighashType::Default,
     )?;
 
-    let sig = secp.sign_schnorr(
+    let sig = taproot_wallet.sign_keypath(
+        secp,
         &bitcoin::secp256k1::Message::from_digest_slice(sighash.as_ref())?,
-        &tweaked_keypair.to_keypair(),
     );
 
     tx.input[0].witness.push(sig.as_ref().to_vec());
