@@ -12,7 +12,7 @@ use bitcoin::{
 use serde_json::json;
 
 use crate::alchemy_client::TxOut as AlchemyTxOut;
-use crate::utils::build_inscription_script;
+use crate::utils::{build_inscription_script, build_rune_op_return};
 use crate::wallets::TaprootWallet;
 
 /// 构造 commit 交易：
@@ -292,6 +292,87 @@ pub fn create_brc20_transaction(
     tx.input[0].witness.push(sig.as_ref().to_vec());
     tx.input[0].witness.push(inscription_script.into_bytes());
     tx.input[0].witness.push(control_block.serialize());
+
+    Ok(tx)
+}
+
+pub fn create_runes_tx(
+    secp: &Secp256k1<bitcoin::secp256k1::All>,
+    utxo: AlchemyTxOut,
+    taproot_wallet: &TaprootWallet,
+) -> Result<Transaction, Box<dyn std::error::Error>> {
+    let fee: u64 = 200;
+
+    if utxo.value < fee {
+        return Err("UTXO value not enough".into());
+    }
+
+    let change_value = utxo.value - fee; // 给自己的找零
+
+    // -------- Input --------
+    let input = TxIn {
+        previous_output: OutPoint {
+            txid: utxo.txid.parse()?,
+            vout: utxo.vout,
+        },
+        script_sig: ScriptBuf::new(),
+        sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+        witness: Default::default(),
+    };
+
+    // -------- Output 0: 找零 --------
+    let change_output = TxOut {
+        value: Amount::from_sat(change_value),
+        script_pubkey: taproot_wallet.get_internal_address().script_pubkey(),
+    };
+
+    // -------- Output 1: OP_RETURN (Rune) --------
+    let rune_output = TxOut {
+        value: Amount::from_sat(0),
+        // script_pubkey: build_rune_op_return(),
+        script_pubkey: Builder::new()
+            .push_slice(&[
+                0x6a, 0x5d, 0x28, 0x02, 0x07, 0x04, 0xea, 0xda, 0xa9, 0xea, 0x92, 0xe0, 0xaa, 0xca,
+                0xaf, 0x85, 0x01, 0x05, 0xb0, 0x09, 0xc0, 0x10, 0x34, 0x00, 0x10, 0x80, 0x60, 0x80,
+                0x80, 0xb9, 0xf6, 0xcd, 0xbf, 0x5f, 0x08, 0xc0, 0xa0, 0x0a, 0x0a, 0x80, 0xc8, 0xaf,
+                0xa0, 0x25,
+            ])
+            .into_script(),
+    };
+
+    let mut tx = Transaction {
+        version: Version::TWO,
+        lock_time: bitcoin::absolute::LockTime::ZERO,
+        input: vec![input],
+        output: vec![change_output, rune_output],
+    };
+
+    for (i, out) in tx.output.iter().enumerate() {
+        println!(
+            "output[{}] value={} script={}",
+            i,
+            out.value.to_sat(),
+            out.script_pubkey.to_hex_string()
+        );
+    }
+
+    let mut sighash_cache = SighashCache::new(&mut tx);
+
+    let sighash = sighash_cache.taproot_key_spend_signature_hash(
+        0,
+        &Prevouts::All(&[TxOut {
+            value: Amount::from_sat(utxo.value),
+            script_pubkey: ScriptBuf::from_hex(&utxo.script_pubkey.hex)?,
+        }]),
+        TapSighashType::Default,
+    )?;
+
+    let sig = taproot_wallet.sign_keypath(
+        secp,
+        &bitcoin::secp256k1::Message::from_digest_slice(sighash.as_ref())?,
+    );
+
+    tx.input[0].witness.push(sig.as_ref().to_vec());
 
     Ok(tx)
 }

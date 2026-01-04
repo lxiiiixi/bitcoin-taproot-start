@@ -1,5 +1,7 @@
 use crate::alchemy_client::AlchemyClient;
-use crate::transactions::{create_brc20_transaction, create_commit_tx, create_first_tx};
+use crate::transactions::{
+    create_brc20_transaction, create_commit_tx, create_first_tx, create_runes_tx,
+};
 use crate::wallets::TaprootWallet;
 use bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
 use bitcoin::script::Builder;
@@ -65,6 +67,22 @@ pub async fn tx_brc20_deploy(
         println!("Confirmations: {}", tx_out.confirmations);
 
         let tx = create_brc20_transaction(&secp, tx_out, &taproot_wallet).unwrap();
+        let txid = alchemy.broadcast_tx(&tx).await.unwrap();
+        println!("  📍 TXID: {}", txid);
+    }
+}
+
+pub async fn tx_rune_deploy(
+    alchemy: &AlchemyClient,
+    secp: &Secp256k1<bitcoin::secp256k1::All>,
+    taproot_wallet: &TaprootWallet,
+    txid: &str,
+    vout_index: u32,
+) {
+    if let Some(tx_out) = alchemy.get_tx_out(txid, vout_index, true).await.unwrap() {
+        println!("UTXO value: {} sats", tx_out.value);
+        println!("Confirmations: {}", tx_out.confirmations);
+        let tx = create_runes_tx(&secp, tx_out, &taproot_wallet).unwrap();
         let txid = alchemy.broadcast_tx(&tx).await.unwrap();
         println!("  📍 TXID: {}", txid);
     }
