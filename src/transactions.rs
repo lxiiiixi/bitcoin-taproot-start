@@ -111,7 +111,7 @@ pub fn create_commit_tx(
     let change_value = funding_utxo.value - commit_value - fee;
 
     // ---------------- 1️⃣ 构造 Taproot script tree（核心） ----------------
-    let inscription_script = build_inscription_script();
+    let inscription_script = build_inscription_script(taproot_wallet.internal_xonly());
 
     let taproot_spend_info: TaprootSpendInfo = TaprootBuilder::new()
         .add_leaf(0, inscription_script.clone())?
@@ -230,7 +230,7 @@ pub fn create_brc20_transaction(
     };
 
     // ---------- 构造 brc20 data 和 inscription script----------
-    let inscription_script = build_inscription_script();
+    let inscription_script = build_inscription_script(taproot_wallet.internal_xonly());
 
     println!(
         "inscription script hex: {}",
