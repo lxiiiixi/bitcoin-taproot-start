@@ -6,6 +6,7 @@ mod transactions;
 mod txs;
 mod utils;
 mod wallets;
+mod wallets_copy;
 
 use bitcoin::key::Secp256k1;
 
