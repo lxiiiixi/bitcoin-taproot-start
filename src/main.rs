@@ -6,7 +6,6 @@ mod transactions;
 mod txs;
 mod utils;
 mod wallets;
-mod wallets_copy;
 
 use bitcoin::key::Secp256k1;
 
@@ -33,8 +32,7 @@ async fn main() {
 
     // txs::tx_inscription_commit(&alchemy, &secp, &taproot_wallet, txid4, 1).await;
     // txs::tx_brc20_deploy(&alchemy, &secp, &taproot_wallet, txid5, 0).await;
-
-    txs::tx_rune_deploy(&alchemy, &secp, &taproot_wallet, txid6, 0).await;
+    // txs::tx_rune_deploy(&alchemy, &secp, &taproot_wallet, txid6, 0).await;
 }
 
 // async fn main() {
