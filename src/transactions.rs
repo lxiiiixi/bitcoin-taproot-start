@@ -1,5 +1,3 @@
-use std::io::Chain;
-
 use bitcoin::key::{Keypair, Secp256k1, TweakedKeypair};
 use bitcoin::script::Builder;
 use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
@@ -9,11 +7,89 @@ use bitcoin::{
     Address, Amount, Network, OutPoint, ScriptBuf, Sequence, TapLeafHash, Transaction, TxIn, TxOut,
     Txid, Witness, hex,
 };
-use serde_json::json;
 
 use crate::alchemy_client::TxOut as AlchemyTxOut;
 use crate::utils::{build_inscription_script, build_rune_op_return};
 use crate::wallets::TaprootWallet;
+
+fn parse_taproot_schnorr_signature(
+    sig_bytes: &[u8],
+) -> Result<(bitcoin::secp256k1::schnorr::Signature, TapSighashType), Box<dyn std::error::Error>> {
+    match sig_bytes.len() {
+        64 => Ok((
+            bitcoin::secp256k1::schnorr::Signature::from_slice(sig_bytes)?,
+            TapSighashType::Default,
+        )),
+        65 => Ok((
+            bitcoin::secp256k1::schnorr::Signature::from_slice(&sig_bytes[..64])?,
+            TapSighashType::from_consensus_u8(sig_bytes[64])?,
+        )),
+        n => Err(format!("invalid schnorr signature length: {}", n).into()),
+    }
+}
+
+fn p2tr_output_key_from_script_pubkey(
+    spk: &ScriptBuf,
+) -> Result<bitcoin::secp256k1::XOnlyPublicKey, Box<dyn std::error::Error>> {
+    if !spk.is_p2tr() {
+        return Err("prevout is not P2TR".into());
+    }
+    let bytes = spk.as_bytes();
+    if bytes.len() != 34 {
+        return Err("invalid v1 P2TR scriptPubKey length".into());
+    }
+    Ok(bitcoin::secp256k1::XOnlyPublicKey::from_slice(
+        &bytes[2..34],
+    )?)
+}
+
+/// 离线验证：检查某个 input 的 Taproot witness 签名是否能花费对应的 prevout。
+///
+/// 注意：这里要求 `prevouts.len() == tx.input.len()`，因为 Taproot sighash 会承诺所有 prevouts。
+pub fn verify_taproot_input_signature(
+    secp: &Secp256k1<bitcoin::secp256k1::All>,
+    tx: &Transaction,
+    input_index: usize,
+    prevouts: &[TxOut],
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if prevouts.len() != tx.input.len() {
+        return Err(format!(
+            "prevouts length mismatch: prevouts={} tx.inputs={}",
+            prevouts.len(),
+            tx.input.len()
+        )
+        .into());
+    }
+    let witness = &tx
+        .input
+        .get(input_index)
+        .ok_or("input_index out of range")?
+        .witness;
+
+    if witness.is_empty() {
+        return Err("empty witness".into());
+    }
+
+    let prevout = prevouts
+        .get(input_index)
+        .ok_or("missing prevout for input_index")?;
+
+    if witness.len() == 1 {
+        let sig_bytes = witness.nth(0).ok_or("missing signature")?;
+        let (sig, sighash_type) = parse_taproot_schnorr_signature(sig_bytes)?;
+        let output_key = p2tr_output_key_from_script_pubkey(&prevout.script_pubkey)?;
+        let sighash = SighashCache::new(tx).taproot_key_spend_signature_hash(
+            input_index,
+            &Prevouts::All(prevouts),
+            sighash_type,
+        )?;
+        let msg = bitcoin::secp256k1::Message::from_digest_slice(sighash.as_ref())?;
+        secp.verify_schnorr(&sig, &msg, &output_key)?;
+        return Ok(true);
+    } else {
+        return Err("witness length is not 1".into());
+    }
+}
 
 /// 构造 commit 交易：
 /// - 花费一个 UTXO
@@ -284,7 +360,7 @@ pub fn create_brc20_transaction(
         TapSighashType::Default,
     )?;
 
-    let sig = taproot_wallet.sign_keypath(
+    let sig = taproot_wallet.sign_internal(
         secp,
         &bitcoin::secp256k1::Message::from_digest_slice(sighash.as_ref())?,
     );

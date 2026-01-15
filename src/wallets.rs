@@ -43,7 +43,8 @@ pub fn create_taproot_wallet(
     let master_xprv = Xpriv::new_master(Network::Testnet, &seed)?;
 
     // 4️⃣ BIP86 路径
-    let path: DerivationPath = "m/86'/1'/0'/0/1".parse()?;
+    let path: DerivationPath = "m/86'/1'/0'/0/0".parse()?;
+    // let path: DerivationPath = "m/86'/1'/0'/0/1".parse()?;
     let child_xprv = master_xprv.derive_priv(secp, &path)?;
 
     // 5️⃣ bitcoin 中 private_key 就是 secp256k1::SecretKey
@@ -81,7 +82,7 @@ pub fn create_taproot_wallet(
         internal_address.to_string()
     );
     println!(
-        "  📍 Tweaked key address(Never should be used): {:?}",
+        "  📍 Tweaked key address(Never should be used): {:?} \n",
         tweaked_address
     );
 

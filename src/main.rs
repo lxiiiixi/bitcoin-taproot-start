@@ -33,6 +33,15 @@ async fn main() {
     // txs::tx_inscription_commit(&alchemy, &secp, &taproot_wallet, txid4, 1).await;
     // txs::tx_brc20_deploy(&alchemy, &secp, &taproot_wallet, txid5, 0).await;
     // txs::tx_rune_deploy(&alchemy, &secp, &taproot_wallet, txid6, 0).await;
+
+    txs::verify_signature(
+        &alchemy,
+        &secp,
+        &taproot_wallet,
+        "6a67c15f9baf65814d5215039a8108a66f688bcb8c6a82bd474c62e5bb2c9049",
+        2,
+    )
+    .await;
 }
 
 // async fn main() {
